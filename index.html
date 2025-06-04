@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <title>Zombie Kill Multiplayer</title>
+  <style>
+    html, body { margin: 0; overflow: hidden; background: #111; color: #fff; font-family: sans-serif; }
+    canvas { display: block; background: #222; margin: 0 auto; }
+  </style>
+</head>
+<body>
+<canvas id="gameCanvas" width="800" height="600"></canvas>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.11.0/firebase-app.js";
+import { getDatabase, ref, onValue, set, get, remove, update } from "https://www.gstatic.com/firebasejs/10.11.0/firebase-database.js";
+
+// Firebase config
+const firebaseConfig = {
+  apiKey: "AIzaSyC_loFOhlE-z3xzH5aVyTZjT69hYOq9Ak4",
+  authDomain: "zombiekillmultiplayer.firebaseapp.com",
+  databaseURL: "https://zombiekillmultiplayer-default-rtdb.firebaseio.com",
+  projectId: "zombiekillmultiplayer",
+  storageBucket: "zombiekillmultiplayer.appspot.com",
+  messagingSenderId: "516378735531",
+  appId: "1:516378735531:web:224d8def38359da1b758ee"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getDatabase(app);
+const playersRef = ref(db, "players");
+const zombiesRef = ref(db, "zombies");
+const bulletsRef = ref(db, "bullets");
+
+// Canvas setup
+const canvas = document.getElementById("gameCanvas");
+const ctx = canvas.getContext("2d");
+
+let x = Math.random() * 700;
+let y = Math.random() * 500;
+let vx = 0, vy = 0;
+const speed = 2;
+let players = {}, zombies = {}, bullets = {};
+let score = 0, health = 100;
+let playerId = null;
+let playerName = prompt("Enter your player name:") || "Unnamed";
+
+// Create player
+function createPlayer() {
+  get(playersRef).then(snapshot => {
+    const existing = snapshot.val() || {};
+    if (Object.keys(existing).length >= 5) {
+      alert("Game full. Try again later.");
+      return;
+    }
+    playerId = Date.now().toString();
+    const playerRef = ref(db, `players/${playerId}`);
+    set(playerRef, { name: playerName, x, y, health, score });
+
+    window.addEventListener("beforeunload", () => {
+      remove(playerRef);
+    });
+
+    onValue(playersRef, snap => { players = snap.val() || {}; });
+    onValue(zombiesRef, snap => { zombies = snap.val() || {}; });
+    onValue(bulletsRef, snap => { bullets = snap.val() || {}; });
+  });
+}
+
+// Update player data
+function updatePlayer() {
+  if (!playerId) return;
+  update(ref(db, `players/${playerId}`), { x, y, health, score });
+}
+
+// Shoot bullets
+function shoot() {
+  const bulletId = Date.now().toString();
+  set(ref(db, `bullets/${bulletId}`), {
+    owner: playerId,
+    x: x + 15,
+    y: y + 15,
+    vx: 5
+  });
+}
+
+// Spawn zombies every 5 sec
+function spawnZombie() {
+  const zombieId = Date.now().toString();
+  set(ref(db, `zombies/${zombieId}`), {
+    x: Math.random() * 700,
+    y: Math.random() * 500
+  });
+}
+setInterval(spawnZombie, 5000);
+
+// Update loop
+function update() {
+  x += vx;
+  y += vy;
+  updatePlayer();
+
+  // Move zombies toward this player
+  for (let zid in zombies) {
+    const z = zombies[zid];
+    if (!z) continue;
+
+    const dx = x - z.x;
+    const dy = y - z.y;
+    const dist = Math.hypot(dx, dy);
+
+    if (dist > 0) {
+      z.x += 0.5 * (dx / dist);
+      z.y += 0.5 * (dy / dist);
+    }
+
+    if (dist < 30) {
+      health -= 1;
+      updatePlayer();
+      if (health <= 0) {
+        remove(ref(db, `players/${playerId}`));
+        alert("Game Over");
+        location.reload();
+      }
+    }
+
+    set(ref(db, `zombies/${zid}`), z);
+  }
+
+  // Bullet updates
+  for (let bid in bullets) {
+    const b = bullets[bid];
+    if (!b) continue;
+
+    b.x += b.vx;
+    set(ref(db, `bullets/${bid}`), b);
+
+    for (let zid in zombies) {
+      const z = zombies[zid];
+      if (z && Math.abs(b.x - z.x) < 20 && Math.abs(b.y - z.y) < 20) {
+        remove(ref(db, `zombies/${zid}`));
+        remove(ref(db, `bullets/${bid}`));
+        if (playerId === b.owner) {
+          score += 10;
+          updatePlayer();
+        }
+      }
+    }
+
+    if (b.x > canvas.width) remove(ref(db, `bullets/${bid}`));
+  }
+}
+
+// Draw everything
+function draw() {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  update();
+
+  for (let id in players) {
+    const p = players[id];
+    ctx.fillStyle = (id === playerId) ? "orange" : "lightblue";
+    ctx.fillRect(p.x, p.y, 30, 30);
+    ctx.fillStyle = "white";
+    ctx.font = "12px Arial";
+    ctx.fillText(`${p.name} (${p.health} HP / ${p.score})`, p.x - 10, p.y - 5);
+  }
+
+  ctx.fillStyle = "green";
+  for (let zid in zombies) {
+    const z = zombies[zid];
+    ctx.fillRect(z.x, z.y, 20, 20);
+  }
+
+  ctx.fillStyle = "yellow";
+  for (let bid in bullets) {
+    const b = bullets[bid];
+    ctx.fillRect(b.x, b.y, 5, 5);
+  }
+
+  requestAnimationFrame(draw);
+}
+
+// Controls
+document.addEventListener("keydown", e => {
+  if (e.key === "ArrowUp") vy = -speed;
+  if (e.key === "ArrowDown") vy = speed;
+  if (e.key === "ArrowLeft") vx = -speed;
+  if (e.key === "ArrowRight") vx = speed;
+  if (e.key === " ") shoot();
+});
+
+document.addEventListener("keyup", e => {
+  if (e.key === "ArrowUp" || e.key === "ArrowDown") vy = 0;
+  if (e.key === "ArrowLeft" || e.key === "ArrowRight") vx = 0;
+});
+
+// Start
+createPlayer();
+draw();
+</script>
+</body>
+</html>
